@@ -1,0 +1,231 @@
+name: CI/CD
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 22
+  BACKEND_IMAGE: ghcr.io/${{ github.repository_owner }}/reptrack-backend
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Lint backend (ESLint)
+        working-directory: backend
+        run: npm run lint
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Lint frontend (ESLint)
+        working-directory: frontend
+        run: npm run lint
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      # ---------- Frontend ----------
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        env:
+          # The app is served from https://<owner>.github.io/<repository>/
+          VITE_BASE_PATH: /${{ github.event.repository.name }}/
+          # Address of the deployed backend (repository variable)
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
+        run: |
+          npm run build
+          # GitHub Pages: unknown paths (e.g. /login after a reload) load the app as well
+          cp dist/index.html dist/404.html
+
+      - name: Upload frontend build
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 7
+
+      # ---------- Backend ----------
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Generate Prisma client
+        working-directory: backend
+        run: npx prisma generate
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build backend Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          tags: ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          outputs: type=docker,dest=${{ runner.temp }}/backend-image.tar
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Upload backend image
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-image
+          path: ${{ runner.temp }}/backend-image.tar
+          retention-days: 7
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Generate Prisma client
+        working-directory: backend
+        run: npx prisma generate
+
+      - name: Test backend (Vitest)
+        working-directory: backend
+        run: npm run test:coverage
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Test frontend (Vitest)
+        working-directory: frontend
+        run: npm run test:coverage
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            backend/coverage
+            frontend/coverage
+          retention-days: 14
+
+  deploy:
+    name: deploy
+    needs: [lint, build, test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ steps.pages.outputs.page_url }}
+    permissions:
+      contents: read
+      packages: write
+      pages: write
+      id-token: write
+    steps:
+      # ---------- Backend: image from the build job -> GHCR -> Render ----------
+      - name: Download backend image
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-image
+          path: ${{ runner.temp }}
+
+      - name: Load backend image
+        run: docker load --input ${{ runner.temp }}/backend-image.tar
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push backend image
+        run: |
+          docker tag "$BACKEND_IMAGE:$GITHUB_SHA" "$BACKEND_IMAGE:latest"
+          docker push "$BACKEND_IMAGE:$GITHUB_SHA"
+          docker push "$BACKEND_IMAGE:latest"
+
+      - name: Deploy backend to Render
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "::error::Secret RENDER_DEPLOY_HOOK_URL is not set in the production environment"
+            exit 1
+          fi
+          image=$(printf '%s' "$BACKEND_IMAGE:$GITHUB_SHA" | jq -sRr @uri)
+          curl --fail --silent --show-error -X POST "$RENDER_DEPLOY_HOOK_URL&imgURL=$image"
+
+      # ---------- Frontend: dist from the build job -> GitHub Pages ----------
+      - name: Download frontend build
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - name: Deploy frontend to GitHub Pages
+        id: pages
+        uses: actions/deploy-pages@v4
+
+      - name: Check that the backend responds
+        env:
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
+        run: |
+          # Render's free plan may need a minute to start the service
+          for i in $(seq 1 20); do
+            if curl --fail --silent "$VITE_API_URL/api/health"; then exit 0; fi
+            sleep 15
+          done
+          echo "::error::Backend at $VITE_API_URL did not respond"
+          exit 1
