@@ -13,7 +13,7 @@ import LogWorkoutView from '../views/client/LogWorkoutView.vue';
 import HistoryView from '../views/client/HistoryView.vue';
 
 const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     // The login page sends logged-in users on to their own start page
     { path: '/', redirect: '/login' },

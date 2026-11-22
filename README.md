@@ -1,5 +1,8 @@
 # RepTrack
 
+[![CI/CD](https://github.com/stanojab/RepTrack/actions/workflows/ci-cd.yml/badge.svg?branch=main)](https://github.com/stanojab/RepTrack/actions/workflows/ci-cd.yml)
+
+
 A web application for personal trainers and their clients to manage training plans and track workouts.
 
 ## About the project
@@ -144,6 +147,26 @@ A short tour: log in as **ana@reptrack.test**, create a plan for Marko under **P
 | `Authentication failed against database server` | The database was created earlier with other settings. Run `docker compose down -v`, then repeat steps 2 and 3. |
 | Login shows "Something went wrong. Please try again." | The backend is not running. Start it with `npm run dev` in the `backend` folder. |
 | `npm run dev` in `backend` stops with `.env: not found` | The `.env` file is missing. Create it from `.env.example` as in step 3. |
+
+## Deployed application
+
+- Application: **https://stanojab.github.io/RepTrack/** (frontend on GitHub Pages)
+- API: **BACKEND_URL** (backend on Render, health check at `/api/health`)
+
+The deployed app uses the same test accounts as the local setup (password `password123`).
+
+## CI/CD pipeline
+
+The pipeline is defined in [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) and runs on every pull request to `main` and on every push to `main`. The `lint`, `build` and `test` jobs run in parallel and are required status checks for merging into `main`.
+
+| Job | What it does |
+|---|---|
+| `lint` | Checks the backend and the frontend with ESLint (`eslint.config.js` in each folder). Any lint error fails the job. |
+| `build` | Builds the frontend with Vite and the backend as a Docker image. npm dependencies are cached with `actions/setup-node`, Docker layers with the GitHub Actions cache. The frontend `dist/` and the backend image are uploaded as artifacts. |
+| `test` | Runs the backend and frontend tests with Vitest and uploads the code coverage reports as the `coverage` artifact. Any failing test fails the job. |
+| `deploy` | Runs only on a push to `main` after `lint`, `build` and `test` succeed, in the `production` environment. It downloads the build artifacts (no rebuild), pushes the backend image to GitHub Container Registry and deploys it to Render with a deploy hook, then publishes the frontend `dist/` to GitHub Pages. |
+
+The frontend gets the backend address from the `VITE_API_URL` variable at build time. The Render deploy hook is stored as the `RENDER_DEPLOY_HOOK_URL` secret of the `production` environment; the database URL and the JWT secret are environment variables of the Render service.
 
 ## Documentation
 
