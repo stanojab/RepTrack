@@ -151,7 +151,7 @@ A short tour: log in as **ana@reptrack.test**, create a plan for Marko under **P
 ## Deployed application
 
 - Application: **https://stanojab.github.io/RepTrack/** (frontend on GitHub Pages)
-- API: **BACKEND_URL** (backend on Render, health check at `/api/health`)
+- API: **https://reptrack-backend-latest.onrender.com** (backend on Render, health check at `/api/health`)
 
 The deployed app uses the same test accounts as the local setup (password `password123`).
 

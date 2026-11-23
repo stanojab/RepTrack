@@ -5,3 +5,5 @@ export class HttpError extends Error {
     this.status = status;
   }
 }
+
+const unusedValue = 42;
